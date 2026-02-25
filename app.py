@@ -1,129 +1,60 @@
-from flask import Flask, request, jsonify, send_file
-import requests
-from PIL import Image
-from io import BytesIO
-import os
-import math
+from PIL import Image, ImageDraw, ImageFont
 
-app = Flask(__name__)
-session = requests.Session()
+# ================= UPDATED CONFIG =================
+CANVAS_SIZE = (1000, 1000)
+# Define fixed positions for the 6 standard hexagons (Left and Right columns)
+HEX_POSITIONS = [
+    (200, 250), (200, 450), (200, 650), # Left Column
+    (800, 250), (800, 450), (800, 800)  # Right Column (Pet at bottom)
+]
+# Special wider slot for the weapon/glow item
+SPECIAL_SLOT = (800, 620) 
 
-# ================= CONFIG =================
-API_KEY = "tanu"
-BACKGROUND_FILENAME = "outfit.png"
-IMAGE_TIMEOUT = 8
-CANVAS_SIZE = (800, 800)
-SLOT_SIZE = 150  # width/height of each octagon slot
-NUM_SLOTS = 8    # total slots in circular UI
-
-# ================= LOAD BACKGROUND =================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-BG_PATH = os.path.join(BASE_DIR, BACKGROUND_FILENAME)
-try:
-    BACKGROUND_IMAGE = Image.open(BG_PATH).convert("RGBA")
-except Exception as e:
-    print("Background load error:", e)
-    BACKGROUND_IMAGE = None
-
-# ================= FETCH PLAYER =================
-def fetch_player_info(uid):
-    try:
-        url = f"https://najmi-info-all-server.vercel.app/player-info?uid={uid}"
-        r = session.get(url, timeout=IMAGE_TIMEOUT)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        print("Player API error:", e)
-        return None
-
-# ================= FETCH IMAGE =================
-def fetch_image(url, max_size=(SLOT_SIZE, SLOT_SIZE)):
-    try:
-        r = session.get(url, timeout=IMAGE_TIMEOUT)
-        r.raise_for_status()
-        img = Image.open(BytesIO(r.content)).convert("RGBA")
-
-        # Scale down if too large
-        img_w, img_h = img.size
-        scale = min(max_size[0]/img_w, max_size[1]/img_h, 1.0)
-        new_w = int(img_w * scale)
-        new_h = int(img_h * scale)
-        return img.resize((new_w, new_h), Image.LANCZOS)
-    except Exception as e:
-        print("Image fetch error:", e)
-        return None
-
-# ================= CALCULATE SLOT POSITIONS =================
-def calculate_circular_positions(center_x, center_y, radius, num_slots):
-    positions = []
-    for i in range(num_slots):
-        angle = 2 * math.pi * i / num_slots - math.pi/2  # start from top
-        x = int(center_x + radius * math.cos(angle))
-        y = int(center_y + radius * math.sin(angle))
-        positions.append((x, y))
-    return positions
-
-# ================= ROUTE =================
-@app.route("/outfit-image", methods=["GET"])
 def outfit_image():
-    uid = request.args.get("uid")
-    key = request.args.get("key")
+    # ... (Keep your existing UID/Key validation and player fetch) ...
 
-    if key != API_KEY:
-        return jsonify({"error": "Invalid API key"}), 401
-
-    if not uid:
-        return jsonify({"error": "Missing uid"}), 400
-
-    if BACKGROUND_IMAGE is None:
-        return jsonify({"error": "Background image not found"}), 500
-
-    player = fetch_player_info(uid)
-    if not player:
-        return jsonify({"error": "Failed to fetch player info"}), 500
-
-    # ===== Get outfit IDs =====
-    outfit_ids = player.get("profileInfo", {}).get("clothes", [])
-
-    # ===== Get pet =====
-    pet_info = player.get("petInfo", {})
-    pet_id = pet_info.get("skinId")  # optional, can use 'id' if you want
-    if pet_id:
-        outfit_ids.append(pet_id)  # add pet as last slot
-
-    if not outfit_ids:
-        return jsonify({"error": "No outfit data found"}), 404
-
-    # ===== Create canvas =====
-    canvas_w, canvas_h = CANVAS_SIZE
-    canvas = Image.new("RGBA", CANVAS_SIZE, (0,0,0,255))
+    # 1. Create Canvas & Paste Background
+    canvas = Image.new("RGBA", CANVAS_SIZE, (0, 0, 0, 255))
     bg_resized = BACKGROUND_IMAGE.resize(CANVAS_SIZE, Image.LANCZOS)
-    canvas.paste(bg_resized, (0,0), bg_resized)
+    canvas.paste(bg_resized, (0, 0), bg_resized)
+    
+    draw = ImageDraw.Draw(canvas)
 
-    # ===== Calculate circular positions =====
-    radius = 250  # distance from center to slot center
-    center_x, center_y = canvas_w//2, canvas_h//2
-    slot_positions = calculate_circular_positions(center_x, center_y, radius, NUM_SLOTS)
+    # 2. Paste Main Character (Center)
+    # Assuming the API provides a 'bundle' or 'fullBody' image URL
+    character_url = player.get("profileInfo", {}).get("bundleUrl") 
+    if character_url:
+        char_img = fetch_image(character_url, max_size=(600, 800))
+        if char_img:
+            canvas.paste(char_img, (200, 150), char_img)
 
-    # ===== Paste items =====
-    for i in range(min(NUM_SLOTS, len(outfit_ids))):
-        oid = str(outfit_ids[i])
-        image_url = f"https://iconapi.wasmer.app/{oid}"
-        img = fetch_image(image_url, max_size=(SLOT_SIZE, SLOT_SIZE))
+    # 3. Paste Outfit Items (Hexagons)
+    clothes = player.get("profileInfo", {}).get("clothes", [])
+    for i in range(min(len(clothes), 5)):  # First 5 items in hexagons
+        oid = str(clothes[i])
+        img = fetch_image(f"https://iconapi.wasmer.app/{oid}", max_size=(140, 140))
         if img:
-            slot_x, slot_y = slot_positions[i]
-            img_w, img_h = img.size
-            paste_x = slot_x - img_w // 2
-            paste_y = slot_y - img_h // 2
-            canvas.paste(img, (paste_x, paste_y), img)
+            pos_x, pos_y = HEX_POSITIONS[i]
+            canvas.paste(img, (pos_x - img.width//2, pos_y - img.height//2), img)
+            
+            # Label
+            draw.text((pos_x - 30, pos_y + 60), "OUTFIT", fill="white")
 
-    # ===== Output PNG =====
-    output = BytesIO()
-    canvas.save(output, format="PNG")
-    output.seek(0)
-    return send_file(output, mimetype="image/png")
+    # 4. Handle Pet (Bottom Right)
+    pet_id = player.get("petInfo", {}).get("skinId")
+    if pet_id:
+        pet_img = fetch_image(f"https://iconapi.wasmer.app/{pet_id}", max_size=(140, 140))
+        if pet_img:
+            px, py = HEX_POSITIONS[5] # Last hexagon slot
+            canvas.paste(pet_img, (px - pet_img.width//2, py - pet_img.height//2), pet_img)
+            draw.text((px - 20, py + 60), "PET", fill="white")
 
+    # 5. Handle Special Item/Weapon (Wide slot)
+    # Just an example using the 6th clothing item if it exists
+    if len(clothes) > 5:
+        special_img = fetch_image(f"https://iconapi.wasmer.app/{clothes[5]}", max_size=(250, 150))
+        if special_img:
+            sx, sy = SPECIAL_SLOT
+            canvas.paste(special_img, (sx - special_img.width//2, sy - special_img.height//2), special_img)
 
-# ================= RUN =================
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    # ... (Save and return file) ...
