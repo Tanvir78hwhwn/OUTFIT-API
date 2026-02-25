@@ -1,72 +1,111 @@
+from flask import Flask, request, jsonify, send_file
+import requests
 from PIL import Image, ImageDraw, ImageFont
+from io import BytesIO
+import os
 
-# ================= NEW CONFIG =================
+app = Flask(__name__)
+session = requests.Session()
+
+# ================= CONFIG =================
+API_KEY = "tanu"
 CANVAS_SIZE = (1000, 1000)
-# Define exact XY coordinates for the center of each hexagon slot
+
+# Exact positions based on your red hexagon reference image
 SLOT_POSITIONS = {
-    "head": (230, 200),
-    "mask": (770, 200),
-    "top": (130, 400),
-    "glass": (870, 400),
-    "bottom": (130, 620),
-    "shoes": (250, 820),
-    "pet": (750, 820),
-    "weapon": (800, 620) # The wider rectangular slot
+    "head": (230, 210),
+    "mask": (770, 210),
+    "top": (130, 410),
+    "glass": (870, 410),
+    "bottom": (130, 630),
+    "shoes": (260, 830),
+    "pet": (740, 830),
+    "weapon": (810, 630)
 }
 
-def outfit_image():
-    # ... [Keep your existing UID/Key validation and player fetch logic] ...
-
-    # 1. Setup Canvas
-    canvas = Image.new("RGBA", CANVAS_SIZE, (0, 0, 0, 255))
-    if BACKGROUND_IMAGE:
-        bg = BACKGROUND_IMAGE.resize(CANVAS_SIZE, Image.LANCZOS)
-        canvas.paste(bg, (0, 0))
-    
-    draw = ImageDraw.Draw(canvas)
-    
-    # 2. Add Player Stats (Top Left)
+# ================= HELPERS =================
+def fetch_image(url, max_size=(160, 160)):
     try:
-        font_main = ImageFont.truetype("arial.ttf", 40)
-        font_sub = ImageFont.truetype("arial.ttf", 25)
+        r = session.get(url, timeout=8)
+        r.raise_for_status()
+        img = Image.open(BytesIO(r.content)).convert("RGBA")
+        img.thumbnail(max_size, Image.LANCZOS)
+        return img
     except:
-        font_main = font_sub = ImageFont.load_default()
+        return None
 
-    name = player.get("nickname", "DARK TANVIR")
-    lvl = player.get("level", "67")
-    likes = player.get("likes", "26228")
+def get_font(size):
+    # Vercel doesn't always have Arial. This fallback prevents the 500 crash.
+    try:
+        return ImageFont.truetype("arial.ttf", size)
+    except:
+        return ImageFont.load_default()
+
+# ================= ROUTE =================
+@app.route("/outfit-image", methods=["GET"])
+def outfit_image():
+    uid = request.args.get("uid")
+    key = request.args.get("key")
+
+    if key != API_KEY:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    # Fetch Player Data
+    try:
+        player_url = f"https://najmi-info-all-server.vercel.app/player-info?uid={uid}"
+        player = session.get(player_url, timeout=8).json()
+    except:
+        return jsonify({"error": "Player not found"}), 404
+
+    # Create Background (Red Gradient Style)
+    canvas = Image.new("RGBA", CANVAS_SIZE, (40, 0, 0, 255)) 
+    draw = ImageDraw.Draw(canvas)
+
+    # 1. Draw Player Info (Top Left)
+    name = player.get("nickname", "UNKNOWN")
+    lvl = player.get("level", "0")
+    likes = player.get("likes", "0")
     
-    draw.text((50, 40), name.upper(), fill="white", font=font_main)
-    draw.text((50, 90), f"Level {lvl}  |  ❤️ {likes}", fill="white", font=font_sub)
+    draw.text((50, 40), name.upper(), fill="white", font=get_font(40))
+    draw.text((50, 90), f"Level {lvl}  |  ❤️ {likes}", fill="white", font=get_font(24))
 
-    # 3. Paste Central Character
-    # Replace this URL with the actual bundle/avatar image from your API
-    char_url = player.get("profileInfo", {}).get("bundleUrl") 
+    # 2. Add Center Character
+    # Note: Ensure your API provides a 'bundle' image link
+    char_url = player.get("profileInfo", {}).get("bundleUrl")
     if char_url:
         char_img = fetch_image(char_url, max_size=(500, 800))
         if char_img:
-            # Centering the character
-            canvas.paste(char_img, (CANVAS_SIZE[0]//2 - char_img.width//2, 150), char_img)
+            canvas.paste(char_img, (250, 180), char_img)
 
-    # 4. Map Clothes to Specific Slots
+    # 3. Add Items to Slots
     clothes = player.get("profileInfo", {}).get("clothes", [])
-    # Mapping logic depends on your API's array order (e.g., 0=head, 1=mask, etc.)
-    order = ["head", "top", "bottom", "shoes", "mask", "glass"]
+    # Mapping indices to slots
+    slot_mapping = ["head", "top", "bottom", "shoes", "mask", "glass"]
     
-    for i, slot_name in enumerate(order):
+    for i, slot_name in enumerate(slot_mapping):
         if i < len(clothes):
-            oid = str(clothes[i])
-            img = fetch_image(f"https://iconapi.wasmer.app/{oid}", max_size=(160, 160))
+            img = fetch_image(f"https://iconapi.wasmer.app/{clothes[i]}")
             if img:
                 pos = SLOT_POSITIONS[slot_name]
-                canvas.paste(img, (pos[0] - img.width//2, pos[1] - img.height//2), img)
+                # Center the item in the slot
+                canvas.paste(img, (pos[0]-img.width//2, pos[1]-img.height//2), img)
+                # Label
+                draw.text((pos[0]-30, pos[1]+80), slot_name.upper(), fill="white", font=get_font(14))
 
-    # 5. Paste Pet (Bottom Right)
+    # 4. Add Pet
     pet_id = player.get("petInfo", {}).get("skinId")
     if pet_id:
-        p_img = fetch_image(f"https://iconapi.wasmer.app/{pet_id}", max_size=(150, 150))
+        p_img = fetch_image(f"https://iconapi.wasmer.app/{pet_id}")
         if p_img:
             pos = SLOT_POSITIONS["pet"]
-            canvas.paste(p_img, (pos[0] - p_img.width//2, pos[1] - p_img.height//2), p_img)
+            canvas.paste(p_img, (pos[0]-p_img.width//2, pos[1]-p_img.height//2), p_img)
+            draw.text((pos[0]-15, pos[1]+80), "PET", fill="white", font=get_font(14))
 
-    # ... [Save and return file] ...
+    # Output
+    img_io = BytesIO()
+    canvas.save(img_io, 'PNG')
+    img_io.seek(0)
+    return send_file(img_io, mimetype='image/png')
+
+if __name__ == "__main__":
+    app.run(debug=True)
